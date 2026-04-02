@@ -1,0 +1,98 @@
+{
+  "name": "Başkentray",
+  "short_name": "Başkentray",
+  "description": "Ankara Banliyö Treni - Canlı Saatler ve Topluluk Bildirimleri",
+  "start_url": "./index.html?v=6",
+  "display": "standalone",
+  "background_color": "#050c1a",
+  "theme_color": "#050c1a",
+  "orientation": "portrait",
+  "lang": "tr",
+  "categories": [
+    "travel",
+    "utilities"
+  ],
+  "icons": [
+    {
+      "src": "icons/icon-72.png?v=2",
+      "sizes": "72x72",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icons/icon-96.png?v=2",
+      "sizes": "96x96",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icons/icon-128.png?v=2",
+      "sizes": "128x128",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icons/icon-144.png?v=2",
+      "sizes": "144x144",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icons/icon-152.png?v=2",
+      "sizes": "152x152",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icons/icon-192.png?v=2",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icons/icon-384.png?v=2",
+      "sizes": "384x384",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icons/icon-512.png?v=2",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Saatler",
+      "short_name": "Saatler",
+      "description": "Sefer saatlerini görüntüle",
+      "url": "./index.html#saatler",
+      "icons": [
+        {
+          "src": "icons/icon-96.png?v=6",
+          "sizes": "96x96"
+        }
+      ]
+    },
+    {
+      "name": "Arıza Bildir",
+      "short_name": "Bildir",
+      "description": "Gecikme veya arıza bildir",
+      "url": "./index.html#ariza",
+      "icons": [
+        {
+          "src": "icons/icon-96.png?v=6",
+          "sizes": "96x96"
+        }
+      ]
+    }
+  ],
+  "screenshots": [],
+  "prefer_related_applications": false,
+  "display_override": [
+    "window-controls-overlay",
+    "standalone",
+    "minimal-ui"
+  ]
+}
