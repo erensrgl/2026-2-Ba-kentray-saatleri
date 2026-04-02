@@ -43,6 +43,7 @@ self.addEventListener('activate', event => {
 });
 
 // ── Fetch ────────────────────────────────────────
+if (event.request.url.includes('favicon.ico')) return;
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
 
