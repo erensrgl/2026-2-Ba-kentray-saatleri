@@ -66,32 +66,40 @@ self.addEventListener('fetch', event => {
     url.pathname.includes('/icons/') ||
     url.pathname.endsWith('sw.js');
 
-  if (isNetworkFirst) {
-    event.respondWith(
-      fetch(event.request, { cache: 'no-cache' })
-        .then(response => {
-          if (response && response.status === 200) {
-            caches.open(CACHE_NAME).then(c => c.put(event.request, response.clone()));
-          }
-          return response;
-        })
-        .catch(() => caches.match(event.request)
-          .then(cached => cached || caches.match('./index.html')))
-    );
-    return;
-  }
-
+  // Eski hali yerine bunu kullan:
+if (isNetworkFirst) {
   event.respondWith(
-    caches.match(event.request).then(cached => {
-      if (cached) return cached;
-      return fetch(event.request).then(response => {
+    fetch(event.request, { cache: 'no-cache' })
+      .then(response => {
         if (!response || response.status !== 200) return response;
-        caches.open(CACHE_NAME).then(c => c.put(event.request, response.clone()));
-        return response;
-      }).catch(() => null);
-    })
+
+        // Clone işlemini bir değişkene atayıp önce onu kullanıyoruz
+        const responseToCache = response.clone();
+        caches.open(CACHE_NAME).then(c => c.put(event.request, responseToCache));
+
+        return response; // Orijinal response'u döndürüyoruz
+      })
+      .catch(() => caches.match(event.request).then(cached => cached || caches.match('./index.html')))
   );
-});
+  return;
+}
+
+  // Eski hali yerine bunu kullan:
+event.respondWith(
+  caches.match(event.request).then(cached => {
+    if (cached) return cached;
+
+    return fetch(event.request).then(response => {
+      if (!response || response.status !== 200) return response;
+
+      // BURASI KRİTİK: Önce clone alıyoruz
+      const responseToCache = response.clone();
+      caches.open(CACHE_NAME).then(c => c.put(event.request, responseToCache));
+
+      return response;
+    }).catch(() => null);
+  })
+);
 
 self.addEventListener('message', event => {
   if (event.data && event.data.type === 'SKIP_WAITING') self.skipWaiting();
