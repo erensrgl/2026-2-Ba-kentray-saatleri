@@ -2636,6 +2636,326 @@ setInterval(() => {
     updateCommunityPanel();
   }
 }, 5000);
+  // ============================================================
+//  YENİ EKLENEN FONKSİYONLAR - Canlı Tren Birleştirme
+// ============================================================
+
+let _broadcastInterval = null;
+let _lastKnownTrainKey = null;
+let _trainExitTimeout = null;
+let _lastBroadcastTime = 0;
+
+// Yön hesaplama
+function calcDirectionFromHistory(points) {
+  if (points.length < 2) return null;
+  const oldest = points[0];
+  const newest = points[points.length - 1];
+  const deltaLon = newest.lon - oldest.lon;
+  const deltaLat = newest.lat - oldest.lat;
+  const dist = Math.sqrt(deltaLon * deltaLon + deltaLat * deltaLat);
+  if (dist < 0.00004) return null;
+  if (Math.abs(deltaLon) > Math.abs(deltaLat) * 0.3) {
+    return deltaLon > 0 ? 0 : 1;
+  }
+  return deltaLat < 0 ? 0 : 1;
+}
+
+// Yön güven kontrolü
+function isDirectionConfident() {
+  if (gpsHistory.length < 3) return false;
+  const dirs = [];
+  for (let i = gpsHistory.length - 3; i < gpsHistory.length - 1; i++) {
+    const d = calcDirectionFromHistory(gpsHistory.slice(i, i + 2));
+    if (d !== null) dirs.push(d);
+  }
+  if (dirs.length === 0) return false;
+  return dirs.every(d => d === dirs[0]);
+}
+
+// En uygun treni bul
+function findMyTrain(activeTrains, userLat, userLon, speedKmh) {
+  if (!activeTrains.length) return null;
+  
+  let nearest = null;
+  let minDist = Infinity;
+  
+  activeTrains.forEach(t => {
+    const dist = haversine(userLat, userLon, t.lat, t.lon);
+    if (dist < minDist) {
+      minDist = dist;
+      nearest = t;
+    }
+  });
+  
+  if (!nearest) return null;
+  
+  const tolerance = Math.min(350, 150 + (speedKmh * 5));
+  if (minDist > tolerance) return null;
+  
+  if (detectedDirection !== null && nearest.dir !== detectedDirection) {
+    if (minDist > 120) return null;
+  }
+  
+  return { train: nearest, distance: minDist };
+}
+
+// GPS yayınını başlat (GELİŞMİŞ)
+function startGpsBroadcast() {
+  if (_broadcastInterval) return;
+  
+  _broadcastInterval = setInterval(async () => {
+    const now = Date.now();
+    if (now - _lastBroadcastTime < 4000) return;
+    
+    const currentSpeed = speedKmh || 0;
+    const movingFast = currentSpeed > 5;
+    
+    if ((!isOnTrain && !movingFast) || !userLocation || !locationActive) {
+      if (_lastKnownTrainKey) {
+        clearTimeout(_trainExitTimeout);
+        _trainExitTimeout = setTimeout(() => {
+          _lastKnownTrainKey = null;
+        }, 30000);
+      }
+      return;
+    }
+    
+    if (detectedDirection === null) return;
+    if (!isDirectionConfident() && !isOnTrain) return;
+    
+    const activeTrains = getTrainPositions().filter(t => t.dir === detectedDirection);
+    if (!activeTrains.length) return;
+    
+    const match = findMyTrain(activeTrains, userLocation.lat, userLocation.lon, currentSpeed);
+    if (!match) return;
+    
+    const train = match.train;
+    const trainKey = `${train.dir === 0 ? 'SK' : 'KS'}_${train.seferSaati}`;
+    
+    _lastKnownTrainKey = trainKey;
+    if (_trainExitTimeout) clearTimeout(_trainExitTimeout);
+    
+    const speedWeight = Math.min(0.7, currentSpeed / 50);
+    const scheduleWeight = 1 - speedWeight;
+    
+    const onlineData = window.__onlineTrains[trainKey];
+    let finalLat = userLocation.lat;
+    let finalLon = userLocation.lon;
+    
+    if (onlineData && onlineData.contributorCount > 1) {
+      const communityWeight = Math.min(0.6, onlineData.contributorCount * 0.1);
+      finalLat = finalLat * (1 - communityWeight) + onlineData.lat * communityWeight;
+      finalLon = finalLon * (1 - communityWeight) + onlineData.lon * communityWeight;
+    }
+    
+    finalLat = finalLat * speedWeight + train.lat * scheduleWeight;
+    finalLon = finalLon * speedWeight + train.lon * scheduleWeight;
+    
+    const avgSpeed = onlineData?.speedKmh 
+      ? (onlineData.speedKmh * 0.6 + currentSpeed * 0.4)
+      : currentSpeed;
+    
+    _lastBroadcastTime = now;
+    
+    try {
+      const { data, error } = await _db.rpc('upsert_train_location', {
+        p_direction:   train.dir === 0 ? 'SK' : 'KS',
+        p_sefer_saati: train.seferSaati,
+        p_lat:         finalLat,
+        p_lon:         finalLon,
+        p_uid:         MY_UID,
+        p_speed_kmh:   avgSpeed
+      });
+      
+      if (!error && data) {
+        window.__onlineTrains[trainKey] = {
+          lat: data.lat,
+          lon: data.lon,
+          speedKmh: data.speed || avgSpeed,
+          contributorCount: data.count,
+          lastSeen: Date.now(),
+          isNew: data.is_new
+        };
+        
+        if (map) updateTrainMarkers();
+      }
+    } catch (err) {
+      console.warn('RPC hatası:', err);
+    }
+    
+  }, 5000);
+}
+
+// Tren ikonu (gelişmiş)
+function trainIcon(isOnline, dir, contributorCount = 0) {
+  const isCrowd = contributorCount >= 3;
+  const isVeryCrowd = contributorCount >= 8;
+  
+  let bg, glow;
+  if (isOnline) {
+    if (isVeryCrowd) {
+      bg = '#ef4444';
+      glow = 'rgba(239,68,68,0.7)';
+    } else if (isCrowd) {
+      bg = '#f59e0b';
+      glow = 'rgba(245,158,11,0.7)';
+    } else {
+      bg = '#10b981';
+      glow = 'rgba(16,185,129,0.6)';
+    }
+  } else {
+    bg = '#3b82f6';
+    glow = 'rgba(59,130,246,0.5)';
+  }
+  
+  const arrow = dir === 0 ? '→' : '←';
+  let crowdIcon = '';
+  if (isVeryCrowd) crowdIcon = '🔥';
+  else if (isCrowd) crowdIcon = '👥';
+  
+  return L.divIcon({
+    className: '',
+    html: `<div style="
+      position:relative;
+      background:${bg};
+      color:#fff;
+      font-size:10px;
+      font-weight:800;
+      padding:3px 8px;
+      border-radius:12px;
+      border:2px solid rgba(255,255,255,0.95);
+      box-shadow:0 0 10px ${glow};
+      white-space:nowrap;
+      line-height:1.2;
+      text-align:center;
+    ">
+      ${crowdIcon}🚆${arrow}
+      ${isOnline ? `<span style="display:inline-block;width:6px;height:6px;background:#fff;border-radius:50%;margin-left:4px;animation:pulse 1s infinite"></span>` : ''}
+      ${contributorCount > 0 ? `<span style="font-size:8px;margin-left:4px;">${contributorCount}</span>` : ''}
+    </div>`,
+    iconSize: [null, null],
+    iconAnchor: [20, 12]
+  });
+}
+
+// Haritadaki tren markerlarını güncelle
+function updateTrainMarkers() {
+  if (!map) return;
+  
+  const aktif = getTrainPositions();
+  const aktifKeys = new Set(aktif.map(t => t.key));
+  
+  Object.keys(trainMarkers).forEach(k => {
+    if (!aktifKeys.has(k)) {
+      map.removeLayer(trainMarkers[k]);
+      delete trainMarkers[k];
+    }
+  });
+  
+  aktif.forEach(train => {
+    const trainKey = `${train.dir === 0 ? 'SK' : 'KS'}_${train.seferSaati}`;
+    const onlineData = window.__onlineTrains[trainKey];
+    const isOnline = onlineData && (Date.now() - onlineData.lastSeen) < 60000;
+    const contributorCount = onlineData?.contributorCount || 0;
+    
+    const etaLine = train.etaDk !== null
+      ? `<div style="font-size:11px;color:#f59e0b;margin-bottom:6px">⏱ ${train.sonrakiDurak}'a <b>${train.etaDk} dk</b></div>`
+      : '';
+    
+    const crowdInfo = contributorCount >= 3 
+      ? `<div style="font-size:10px;color:#f59e0b;margin-top:4px">👥 ${contributorCount} yolcu bildiriyor</div>`
+      : (contributorCount > 0 ? `<div style="font-size:10px;color:#34d399;margin-top:4px">👤 ${contributorCount} yolcu</div>` : '');
+    
+    const popupHtml = `
+      <div style="font-family:Inter,sans-serif;min-width:170px">
+        <div style="font-weight:800;font-size:13px;margin-bottom:6px">
+          🚆 ${train.label}
+        </div>
+        <div style="font-size:11px;color:#666;margin-bottom:2px">
+          ⏱ Sefer: <b>${train.seferSaati}</b>
+        </div>
+        <div style="font-size:11px;color:#666;margin-bottom:2px">
+          📍 ${train.mevcutDurak || '—'} → ${train.sonrakiDurak || '—'}
+        </div>
+        ${etaLine}
+        <div style="font-size:10px;padding:3px 8px;border-radius:10px;display:inline-block;
+          background:${isOnline ? 'rgba(16,185,129,0.15)' : 'rgba(59,130,246,0.15)'};
+          color:${isOnline ? '#10b981' : '#3b82f6'};
+          border:1px solid ${isOnline ? '#10b981' : '#3b82f6'};">
+          ${isOnline ? (contributorCount >= 3 ? '🟡 Topluluk' : '🟢 Canlı') : '🔵 Tarife'}
+        </div>
+        ${crowdInfo}
+      </div>`;
+    
+    const finalLat = isOnline ? onlineData.lat : train.lat;
+    const finalLon = isOnline ? onlineData.lon : train.lon;
+    
+    if (trainMarkers[train.key]) {
+      trainMarkers[train.key].setLatLng([finalLat, finalLon]);
+      trainMarkers[train.key].setIcon(trainIcon(isOnline, train.dir, contributorCount));
+      trainMarkers[train.key].getPopup()?.setContent(popupHtml);
+    } else {
+      const m = L.marker([finalLat, finalLon], {
+        icon: trainIcon(isOnline, train.dir, contributorCount),
+        zIndexOffset: 500
+      }).addTo(map);
+      m.bindPopup(popupHtml);
+      trainMarkers[train.key] = m;
+    }
+  });
+  
+  const el = document.getElementById('trainCountBadge');
+  if (el) {
+    const totalContributors = Object.values(window.__onlineTrains).reduce((sum, t) => sum + (t.contributorCount || 0), 0);
+    el.textContent = `${aktif.length} tren${totalContributors > 0 ? ` (${totalContributors})` : ''}`;
+  }
+}
+
+// Online tren listener
+function startOnlineTrainListener() {
+  _db.channel('train_locations')
+    .on('postgres_changes', {
+      event: '*',
+      schema: 'public',
+      table: 'train_locations'
+    }, (payload) => {
+      const r = payload.new;
+      if (!r || !r.lat || !r.lon) return;
+      const key = r.direction + '_' + r.sefer_saati;
+      window.__onlineTrains[key] = {
+        lat: r.lat,
+        lon: r.lon,
+        speedKmh: r.speed_kmh || 0,
+        contributorCount: r.contributor_count || 1,
+        lastSeen: Date.now()
+      };
+      if (map) updateTrainMarkers();
+    })
+    .subscribe();
+  
+  _db.from('train_locations')
+    .select('*')
+    .gte('updated_at', new Date(Date.now() - 120000).toISOString())
+    .then(({ data }) => {
+      if (!data) return;
+      data.forEach(r => {
+        if (!r.lat || !r.lon) return;
+        const key = r.direction + '_' + r.sefer_saati;
+        window.__onlineTrains[key] = {
+          lat: r.lat,
+          lon: r.lon,
+          speedKmh: r.speed_kmh || 0,
+          contributorCount: r.contributor_count || 1,
+          lastSeen: new Date(r.updated_at).getTime()
+        };
+      });
+      if (map) updateTrainMarkers();
+    });
+}
+
+// ============================================================
+//  YENİ FONKSİYONLARIN SONU
+// ============================================================
 </script>
 
 <!-- ═══════════════════════════════════════════════════════
