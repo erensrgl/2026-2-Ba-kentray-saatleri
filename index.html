@@ -59,19 +59,54 @@ async function konumuVeritabaninaGonder(position) {
 
 // 3. Haritadaki Trenleri Canlı Veriyle Hareket Ettirme
 async function haritayiCanliGuncelle() {
+    // 1. Veritabanından son verileri çek
     const { data, error } = await _db.from('train_locations').select('*');
     if (error || !data) return;
 
     data.forEach(dbTren => {
-        let yakinMarker = null;
-        let minD = Infinity;
+        // ESKİ VE YENİ VERİ UYUMU İÇİN ANAHTAR OLUŞTURMA
+        // Eğer sefer_saati varsa onu kullan, yoksa sadece direction kullan
+        const trenKey = dbTren.sefer_saati ? (dbTren.direction + '_' + dbTren.sefer_saati) : dbTren.direction;
+        
+        let yakinMarker = trainMarkers[trenKey];
 
-        // Haritadaki en yakın tren ikonunu bul
-        Object.keys(trainMarkers).forEach(key => {
-            const m = trainMarkers[key];
-            const d = mesafeHesapla(dbTren.lat, dbTren.lon, m.getLatLng().lat, m.getLatLng().lng);
-            if (d < minD) { minD = d; yakinMarker = m; }
-        });
+        // Eğer bu anahtarla bir marker yoksa, en yakın mavi treni bulmaya çalış
+        if (!yakinMarker) {
+            let minD = Infinity;
+            Object.keys(trainMarkers).forEach(key => {
+                const m = trainMarkers[key];
+                const d = mesafeHesapla(dbTren.lat, dbTren.lon, m.getLatLng().lat, m.getLatLng().lng);
+                if (d < minD) { minD = d; yakinMarker = m; }
+            });
+        }
+
+        if (yakinMarker) {
+            // Konumu Güncelle
+            yakinMarker.setLatLng([dbTren.lat, dbTren.lon]);
+            yakinMarker.isOnline = true;
+            
+            // Görseli Yeşile Çevir
+            const el = yakinMarker.getElement();
+            if (el) {
+                el.style.filter = "hue-rotate(120deg) brightness(1.3) drop-shadow(0 0 5px green)";
+            }
+
+            // Popup Bilgisi
+            const hedefLat = 39.9587, hedefLon = 32.5775; // Sincan Örneği
+            const mesafe = mesafeHesapla(dbTren.lat, dbTren.lon, hedefLat, hedefLon);
+            const sure = dbTren.speed_kmh > 5 ? Math.round((mesafe / dbTren.speed_kmh) * 60) + " dk" : "Duruyor";
+
+            yakinMarker.setPopupContent(`
+                <div style="text-align:center">
+                    <b style="color:green">📡 CANLI TAKİP</b><br>
+                    <b>Hat:</b> ${dbTren.direction}<br>
+                    <b>Hız:</b> ${dbTren.speed_kmh} km/h<br>
+                    <b>Varış:</b> <span style="color:blue">${sure}</span>
+                </div>
+            `);
+        }
+    });
+}
 
         if (yakinMarker) {
             yakinMarker.setLatLng([dbTren.lat, dbTren.lon]);
@@ -130,9 +165,8 @@ function startSupabaseListener() {
             schema: 'public', 
             table: 'train_locations' 
         }, (payload) => {
-            console.log("⚡ Tren verisi güncellendi, harita tazeleniyor...");
-            // Veri gelince haritadaki trenleri hareket ettiren fonksiyonu çağır
-            haritayiCanliGuncelle(); 
+            console.log("⚡ Yeni veri geldi, harita tazeleniyor...");
+    haritayiCanliGuncelle(); // Veri geldiği an yukarıdaki motoru çalıştır
         });
 
     // En son abone oluyoruz
