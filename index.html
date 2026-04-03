@@ -63,45 +63,15 @@ async function haritayiCanliGuncelle() {
     if (error || !data) return;
 
     data.forEach(dbTren => {
-        // ESKİ VE YENİ VERİ UYUMU (Kritik nokta burası)
-        // Eğer veritabanında sefer_saati varsa onu da ekle, yoksa sadece direction kullan
-        const trenKey = dbTren.sefer_saati ? (dbTren.direction + '_' + dbTren.sefer_saati) : dbTren.direction;
-        
-        let m = trainMarkers[trenKey];
+        let yakinMarker = null;
+        let minD = Infinity;
 
-        // Eğer marker bulunamadıysa, en yakın olanı bulmaya çalış
-        if (!m) {
-            let minD = Infinity;
-            Object.keys(trainMarkers).forEach(key => {
-                const tempM = trainMarkers[key];
-                const d = mesafeHesapla(dbTren.lat, dbTren.lon, tempM.getLatLng().lat, tempM.getLatLng().lng);
-                if (d < minD && d < 2) { // 2km içindeki en yakın treni bul
-                    minD = d;
-                    m = tempM;
-                }
-            });
-        }
-
-        if (m) {
-            m.setLatLng([dbTren.lat, dbTren.lon]);
-            const el = m.getElement();
-            if (el) {
-                el.style.filter = "hue-rotate(120deg) brightness(1.3) drop-shadow(0 0 8px green)";
-            }
-            
-            const mesafe = mesafeHesapla(dbTren.lat, dbTren.lon, 39.9587, 32.5775);
-            const sure = dbTren.speed_kmh > 5 ? Math.round((mesafe / dbTren.speed_kmh) * 60) + " dk" : "Duruyor";
-
-            m.setPopupContent(`
-                <div style="text-align:center">
-                    <b style="color:green">📡 CANLI TAKİP</b><br>
-                    <b>Hız:</b> ${dbTren.speed_kmh} km/h<br>
-                    <b>Sincan'a Kalan:</b> <span style="color:blue">${sure}</span>
-                </div>
-            `);
-        }
-    });
-}
+        // Haritadaki en yakın tren ikonunu bul
+        Object.keys(trainMarkers).forEach(key => {
+            const m = trainMarkers[key];
+            const d = mesafeHesapla(dbTren.lat, dbTren.lon, m.getLatLng().lat, m.getLatLng().lng);
+            if (d < minD) { minD = d; yakinMarker = m; }
+        });
 
         if (yakinMarker) {
             yakinMarker.setLatLng([dbTren.lat, dbTren.lon]);
@@ -139,25 +109,29 @@ if (navigator.geolocation) {
     });
 }
 
-// 1. SUPABASE REALTIME DİNLEYİCİSİ (HATASIZ)
 function startSupabaseListener() {
+    console.log("🔄 Supabase dinleyicisi hazırlanıyor...");
+
+    // 1. ADIM: Önce kanalı tanımla (Hemen .subscribe() DEME!)
     const channel = _db.channel('db-changes');
+
+    // 2. ADIM: Neleri dinleyeceğini (olayları) kanala ekle
     channel
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'train_locations' }, () => {
-            console.log("⚡ Yeni konum verisi geldi!");
-            haritayiCanliGuncelle(); 
+        .on('postgres_changes', { 
+            event: '*', 
+            schema: 'public', 
+            table: 'reports' 
+        }, () => {
+            if (typeof fetchReports === "function") fetchReports();
         })
-        .subscribe((status) => {
-            console.log("📡 Bağlantı:", status);
+        .on('postgres_changes', { 
+            event: '*', 
+            schema: 'public', 
+            table: 'train_locations' 
+        }, (payload) => {
+            console.log("⚡ Tren verisi güncellendi, harita tazeleniyor...");
+            haritayiCanliGuncelle(); // Bu fonksiyon haritadaki treni hareket ettirir
         });
-}
-
-// 2. SİSTEMLERİ TETİKLE
-// Sayfa açıldığında dinleyiciyi başlat
-startSupabaseListener();
-
-// Her 5 saniyede bir de manuel kontrol yap (Yedek olarak)
-setInterval(haritayiCanliGuncelle, 5000);
 
     // 3. ADIM: ŞİMDİ "Abone Ol" diyerek bağlantıyı ateşle
     channel.subscribe((status) => {
