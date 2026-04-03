@@ -109,19 +109,20 @@ if (navigator.geolocation) {
     });
 }
 
+// 1. SUPABASE REALTIME DİNLEYİCİSİ (HATASIZ)
 function startSupabaseListener() {
     console.log("🔄 Supabase dinleyicisi hazırlanıyor...");
 
-    // 1. ADIM: Önce kanalı tanımla (Hemen .subscribe() DEME!)
+    // Önce kanalı tanımlıyoruz (Hemen .subscribe() demiyoruz!)
     const channel = _db.channel('db-changes');
 
-    // 2. ADIM: Neleri dinleyeceğini (olayları) kanala ekle
     channel
         .on('postgres_changes', { 
             event: '*', 
             schema: 'public', 
             table: 'reports' 
         }, () => {
+            // Raporlar değişince raporları çek (Eğer fonksiyonun varsa)
             if (typeof fetchReports === "function") fetchReports();
         })
         .on('postgres_changes', { 
@@ -130,8 +131,26 @@ function startSupabaseListener() {
             table: 'train_locations' 
         }, (payload) => {
             console.log("⚡ Tren verisi güncellendi, harita tazeleniyor...");
-            haritayiCanliGuncelle(); // Bu fonksiyon haritadaki treni hareket ettirir
+            // Veri gelince haritadaki trenleri hareket ettiren fonksiyonu çağır
+            haritayiCanliGuncelle(); 
         });
+
+    // En son abone oluyoruz
+    channel.subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+            console.log("✅ Supabase Realtime bağlantısı hatasız kuruldu!");
+        } else {
+            console.log("📡 Bağlantı Durumu:", status);
+        }
+    });
+}
+
+// 2. SİSTEMLERİ TETİKLE
+// Sayfa açıldığında dinleyiciyi başlat
+startSupabaseListener();
+
+// Her 5 saniyede bir de manuel kontrol yap (Yedek olarak)
+setInterval(haritayiCanliGuncelle, 5000);
 
     // 3. ADIM: ŞİMDİ "Abone Ol" diyerek bağlantıyı ateşle
     channel.subscribe((status) => {
