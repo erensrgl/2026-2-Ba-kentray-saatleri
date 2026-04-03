@@ -29,6 +29,9 @@ const SUPA_URL = 'https://vbamfndggmuwtbxavnbt.supabase.co';
 const SUPA_KEY = 'sb_publishable_eSJz4uxUcV3YMh0TiZV0vQ_JeJTEYhF';
 const _db = supabase.createClient(SUPA_URL, SUPA_KEY);
 
+// Eksik olan ve hata veren değişkeni buraya ekliyoruz:
+const MY_UID = 'user_' + Math.random().toString(36).substr(2, 9);
+
 // 1. Mesafe Hesaplama Motoru (KM)
 function mesafeHesapla(lat1, lon1, lat2, lon2) {
     const R = 6371; 
@@ -2299,7 +2302,7 @@ function initMap() {
   updateTrainMarkers();
 
   // Online listener
-  startOnlineTrainListener();
+
 
   if (userLocation) updateMapLocation(userLocation.lat, userLocation.lon);
   setTimeout(() => map?.invalidateSize(), 200);
@@ -2919,26 +2922,7 @@ function updateTrainMarkers() {
   }
 }
 
-function startOnlineTrainListener() {
-  _db.channel('train_locations')
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'train_locations' }, (payload) => {
-      const r = payload.new;
-      if (!r || !r.lat || !r.lon) return;
-      const key = r.direction + '_' + r.sefer_saati;
-      window.__onlineTrains[key] = { lat: r.lat, lon: r.lon, speedKmh: r.speed_kmh || 0, contributorCount: r.contributor_count || 1, lastSeen: Date.now() };
-      if (map) updateTrainMarkers();
-    })
-    .subscribe();
-  _db.from('train_locations').select('*').gte('updated_at', new Date(Date.now() - 120000).toISOString()).then(({ data }) => {
-    if (!data) return;
-    data.forEach(r => {
-      if (!r.lat || !r.lon) return;
-      const key = r.direction + '_' + r.sefer_saati;
-      window.__onlineTrains[key] = { lat: r.lat, lon: r.lon, speedKmh: r.speed_kmh || 0, contributorCount: r.contributor_count || 1, lastSeen: new Date(r.updated_at).getTime() };
-    });
-    if (map) updateTrainMarkers();
-  });
-}
+
 
 // ============================================================
 </script>
