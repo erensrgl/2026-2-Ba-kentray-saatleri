@@ -59,49 +59,44 @@ async function konumuVeritabaninaGonder(position) {
 
 // 3. Haritadaki Trenleri Canlı Veriyle Hareket Ettirme
 async function haritayiCanliGuncelle() {
-    // 1. Veritabanından son verileri çek
     const { data, error } = await _db.from('train_locations').select('*');
     if (error || !data) return;
 
     data.forEach(dbTren => {
-        // ESKİ VE YENİ VERİ UYUMU İÇİN ANAHTAR OLUŞTURMA
-        // Eğer sefer_saati varsa onu kullan, yoksa sadece direction kullan
+        // ESKİ VE YENİ VERİ UYUMU (Kritik nokta burası)
+        // Eğer veritabanında sefer_saati varsa onu da ekle, yoksa sadece direction kullan
         const trenKey = dbTren.sefer_saati ? (dbTren.direction + '_' + dbTren.sefer_saati) : dbTren.direction;
         
-        let yakinMarker = trainMarkers[trenKey];
+        let m = trainMarkers[trenKey];
 
-        // Eğer bu anahtarla bir marker yoksa, en yakın mavi treni bulmaya çalış
-        if (!yakinMarker) {
+        // Eğer marker bulunamadıysa, en yakın olanı bulmaya çalış
+        if (!m) {
             let minD = Infinity;
             Object.keys(trainMarkers).forEach(key => {
-                const m = trainMarkers[key];
-                const d = mesafeHesapla(dbTren.lat, dbTren.lon, m.getLatLng().lat, m.getLatLng().lng);
-                if (d < minD) { minD = d; yakinMarker = m; }
+                const tempM = trainMarkers[key];
+                const d = mesafeHesapla(dbTren.lat, dbTren.lon, tempM.getLatLng().lat, tempM.getLatLng().lng);
+                if (d < minD && d < 2) { // 2km içindeki en yakın treni bul
+                    minD = d;
+                    m = tempM;
+                }
             });
         }
 
-        if (yakinMarker) {
-            // Konumu Güncelle
-            yakinMarker.setLatLng([dbTren.lat, dbTren.lon]);
-            yakinMarker.isOnline = true;
-            
-            // Görseli Yeşile Çevir
-            const el = yakinMarker.getElement();
+        if (m) {
+            m.setLatLng([dbTren.lat, dbTren.lon]);
+            const el = m.getElement();
             if (el) {
-                el.style.filter = "hue-rotate(120deg) brightness(1.3) drop-shadow(0 0 5px green)";
+                el.style.filter = "hue-rotate(120deg) brightness(1.3) drop-shadow(0 0 8px green)";
             }
-
-            // Popup Bilgisi
-            const hedefLat = 39.9587, hedefLon = 32.5775; // Sincan Örneği
-            const mesafe = mesafeHesapla(dbTren.lat, dbTren.lon, hedefLat, hedefLon);
+            
+            const mesafe = mesafeHesapla(dbTren.lat, dbTren.lon, 39.9587, 32.5775);
             const sure = dbTren.speed_kmh > 5 ? Math.round((mesafe / dbTren.speed_kmh) * 60) + " dk" : "Duruyor";
 
-            yakinMarker.setPopupContent(`
+            m.setPopupContent(`
                 <div style="text-align:center">
                     <b style="color:green">📡 CANLI TAKİP</b><br>
-                    <b>Hat:</b> ${dbTren.direction}<br>
                     <b>Hız:</b> ${dbTren.speed_kmh} km/h<br>
-                    <b>Varış:</b> <span style="color:blue">${sure}</span>
+                    <b>Sincan'a Kalan:</b> <span style="color:blue">${sure}</span>
                 </div>
             `);
         }
@@ -146,37 +141,15 @@ if (navigator.geolocation) {
 
 // 1. SUPABASE REALTIME DİNLEYİCİSİ (HATASIZ)
 function startSupabaseListener() {
-    console.log("🔄 Supabase dinleyicisi hazırlanıyor...");
-
-    // Önce kanalı tanımlıyoruz (Hemen .subscribe() demiyoruz!)
     const channel = _db.channel('db-changes');
-
     channel
-        .on('postgres_changes', { 
-            event: '*', 
-            schema: 'public', 
-            table: 'reports' 
-        }, () => {
-            // Raporlar değişince raporları çek (Eğer fonksiyonun varsa)
-            if (typeof fetchReports === "function") fetchReports();
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'train_locations' }, () => {
+            console.log("⚡ Yeni konum verisi geldi!");
+            haritayiCanliGuncelle(); 
         })
-        .on('postgres_changes', { 
-            event: '*', 
-            schema: 'public', 
-            table: 'train_locations' 
-        }, (payload) => {
-            console.log("⚡ Yeni veri geldi, harita tazeleniyor...");
-    haritayiCanliGuncelle(); // Veri geldiği an yukarıdaki motoru çalıştır
+        .subscribe((status) => {
+            console.log("📡 Bağlantı:", status);
         });
-
-    // En son abone oluyoruz
-    channel.subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
-            console.log("✅ Supabase Realtime bağlantısı hatasız kuruldu!");
-        } else {
-            console.log("📡 Bağlantı Durumu:", status);
-        }
-    });
 }
 
 // 2. SİSTEMLERİ TETİKLE
