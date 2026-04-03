@@ -110,24 +110,21 @@ if (navigator.geolocation) {
 }
 
 function startSupabaseListener() {
-    // 1. Önce kanalı oluştur
+    // Önce kanalı tanımla ama hemen subscribe DEME
     const channel = _db.channel('db-changes');
 
-    // 2. Dinlenecek tabloları ve olayları tanımla (Henüz subscribe demedik)
     channel
         .on('postgres_changes', { event: '*', schema: 'public', table: 'reports' }, () => {
             if (typeof fetchReports === "function") fetchReports();
         })
         .on('postgres_changes', { event: '*', schema: 'public', table: 'train_locations' }, (payload) => {
-            console.log("⚡ Tren konumu değişti, harita güncelleniyor...");
+            console.log("⚡ Tren verisi güncellendi, harita tazeleniyor...");
             haritayiCanliGuncelle();
         });
 
-    // 3. EN SON Abone ol (Bu sıralama çok önemli)
+    // EN SON subscribe de (Hata buradan çıkıyordu)
     channel.subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
-            console.log("✅ Supabase Realtime bağlantısı kuruldu!");
-        }
+        console.log("📡 Bağlantı Durumu:", status);
     });
 }
 
