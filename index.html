@@ -235,9 +235,12 @@ window.addEventListener('DOMContentLoaded', () => {
 .guide-overlay.open { display: flex; }
 .guide-box {
   background: linear-gradient(160deg, #0d1d35, #050c1a);
-  border: 1px solid #3b82f6; border-radius: 28px;
-  width: 100%; max-width: 350px; padding: 35px 25px; text-align: center;
-  box-shadow: 0 25px 50px rgba(0,0,0,0.6);
+  border: 1px solid #3b82f6; 
+  border-radius: 28px;
+  width: 90%; /* Kutuyu genişlettik */
+  max-width: 400px; 
+  padding: 20px; 
+  text-align: center;
 }
 .guide-slide { display: none; animation: guideFade 0.4s ease-out; }
 .guide-slide.active { display: block; }
