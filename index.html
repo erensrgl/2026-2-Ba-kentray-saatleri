@@ -110,21 +110,36 @@ if (navigator.geolocation) {
 }
 
 function startSupabaseListener() {
-    // Önce kanalı tanımla ama hemen subscribe DEME
+    console.log("🔄 Supabase dinleyicisi hazırlanıyor...");
+
+    // 1. ADIM: Önce kanalı tanımla (Hemen .subscribe() DEME!)
     const channel = _db.channel('db-changes');
 
+    // 2. ADIM: Neleri dinleyeceğini (olayları) kanala ekle
     channel
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'reports' }, () => {
+        .on('postgres_changes', { 
+            event: '*', 
+            schema: 'public', 
+            table: 'reports' 
+        }, () => {
             if (typeof fetchReports === "function") fetchReports();
         })
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'train_locations' }, (payload) => {
+        .on('postgres_changes', { 
+            event: '*', 
+            schema: 'public', 
+            table: 'train_locations' 
+        }, (payload) => {
             console.log("⚡ Tren verisi güncellendi, harita tazeleniyor...");
-            haritayiCanliGuncelle();
+            haritayiCanliGuncelle(); // Bu fonksiyon haritadaki treni hareket ettirir
         });
 
-    // EN SON subscribe de (Hata buradan çıkıyordu)
+    // 3. ADIM: ŞİMDİ "Abone Ol" diyerek bağlantıyı ateşle
     channel.subscribe((status) => {
-        console.log("📡 Bağlantı Durumu:", status);
+        if (status === 'SUBSCRIBED') {
+            console.log("✅ Supabase Realtime bağlantısı hatasız kuruldu!");
+        } else {
+            console.log("📡 Bağlantı Durumu:", status);
+        }
     });
 }
 
