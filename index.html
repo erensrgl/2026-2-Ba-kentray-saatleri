@@ -22,22 +22,116 @@
 // ════════════════════════════════════════════════════════
 //  SUPABASE — YENİ PROJE BİLGİLERİ
 // ════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════
+//  SUPABASE — CANLI BAĞLANTI AYARLARI
+// ════════════════════════════════════════════════════════
 const SUPA_URL = 'https://vbamfndggmuwtbxavnbt.supabase.co';
 const SUPA_KEY = 'sb_publishable_eSJz4uxUcV3YMh0TiZV0vQ_JeJTEYhF';
 const _db = supabase.createClient(SUPA_URL, SUPA_KEY);
 
-function getOrCreateUID() {
-  let uid = localStorage.getItem('bkr_uid');
-  if (!uid) { uid = 'u' + Date.now().toString(36) + Math.random().toString(36).slice(2,7); localStorage.setItem('bkr_uid', uid); }
-  return uid;
+// 1. Mesafe Hesaplama Motoru (KM)
+function mesafeHesapla(lat1, lon1, lat2, lon2) {
+    const R = 6371; 
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+              Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
 }
-const MY_UID = getOrCreateUID();
-window.__supaReports = {};
+
+// 2. Yolcu Konumunu Supabase'e Yazma (Hız Kontrollü)
+async function konumuVeritabaninaGonder(position) {
+    const { latitude, longitude, speed } = position.coords;
+    const hizKmh = Math.round((speed || 0) * 3.6); 
+
+    if (hizKmh > 15) { // Sadece trendeyken gönder
+        const { error } = await _db.from('train_locations').upsert([{
+            direction: "Sincan-Kayaş Hattı", 
+            lat: latitude,
+            lon: longitude,
+            speed_kmh: hizKmh,
+            updated_at: new Date().toISOString()
+        }]);
+        if (!error) console.log("📡 Canlı konum veritabanına işlendi.");
+    }
+}
+
+// 3. Haritadaki Trenleri Canlı Veriyle Hareket Ettirme
+async function haritayiCanliGuncelle() {
+    const { data, error } = await _db.from('train_locations').select('*');
+    if (error || !data) return;
+
+    data.forEach(dbTren => {
+        let yakinMarker = null;
+        let minD = Infinity;
+
+        // Haritadaki en yakın tren ikonunu bul
+        Object.keys(trainMarkers).forEach(key => {
+            const m = trainMarkers[key];
+            const d = mesafeHesapla(dbTren.lat, dbTren.lon, m.getLatLng().lat, m.getLatLng().lng);
+            if (d < minD) { minD = d; yakinMarker = m; }
+        });
+
+        if (yakinMarker) {
+            yakinMarker.setLatLng([dbTren.lat, dbTren.lon]);
+            yakinMarker.isOnline = true;
+            
+            const el = yakinMarker.getElement();
+            if (el) {
+                el.style.filter = "hue-rotate(120deg) brightness(1.3)";
+                el.classList.add('online-train');
+            }
+
+            // Örnek: Sincan Garı'na kalan süre (Koordinatı dinamik alabilirsin)
+            const hedefLat = 39.9587, hedefLon = 32.5775;
+            const msa = mesafeHesapla(dbTren.lat, dbTren.lon, hedefLat, hedefLon);
+            const dk = dbTren.speed_kmh > 5 ? Math.round((msa / dbTren.speed_kmh) * 60) + " dk" : "Duruyor";
+
+            yakinMarker.setPopupContent(`
+                <div style="text-align:center">
+                    <b style="color:green">📡 CANLI TAKİP</b><br>
+                    <b>Hız:</b> ${dbTren.speed_kmh} km/h<br>
+                    <b>Varış Tahmini:</b> <span style="color:blue">${dk}</span>
+                </div>
+            `);
+        }
+    });
+}
+
+// 4. Sistemleri Başlat
+setInterval(haritayiCanliGuncelle, 5000);
+
+if (navigator.geolocation) {
+    navigator.geolocation.watchPosition(konumuVeritabaninaGonder, null, {
+        enableHighAccuracy: true,
+        maximumAge: 10000 
+    });
+}
 
 function startSupabaseListener() {
-  _db.channel('rpt').on('postgres_changes', { event:'*', schema:'public', table:'reports' }, () => fetchReports()).subscribe();
-  fetchReports();
+    // 1. Önce kanalı oluştur
+    const channel = _db.channel('db-changes');
+
+    // 2. Dinlenecek tabloları ve olayları tanımla (Henüz subscribe demedik)
+    channel
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'reports' }, () => {
+            if (typeof fetchReports === "function") fetchReports();
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'train_locations' }, (payload) => {
+            console.log("⚡ Tren konumu değişti, harita güncelleniyor...");
+            haritayiCanliGuncelle();
+        });
+
+    // 3. EN SON Abone ol (Bu sıralama çok önemli)
+    channel.subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+            console.log("✅ Supabase Realtime bağlantısı kuruldu!");
+        }
+    });
 }
+
+startSupabaseListener();
 
 async function fetchReports() {
   const since = new Date(Date.now() - 2*60*60*1000).toISOString();
@@ -139,50 +233,6 @@ window.addEventListener('DOMContentLoaded', () => {
 
 /* ── KULLANICI ROZET ── */
 #userBadge{display:none;position:fixed;bottom:90px;right:10px;background:rgba(5,12,26,0.92);border:1px solid var(--border2);border-radius:20px;padding:4px 10px;font-size:10px;color:var(--text3);z-index:50;backdrop-filter:blur(8px)}
-
-/* ── TRENDE PANEL ── */
-.on-train-panel{margin:8px 16px;background:linear-gradient(135deg,rgba(16,185,129,0.18),rgba(5,150,105,0.10));border:2px solid var(--green);border-left:6px solid var(--green2);border-radius:var(--r);padding:14px 16px;animation:trainGlow 2s ease-in-out infinite}
-@keyframes trainGlow{0%,100%{box-shadow:0 0 0 0 rgba(16,185,129,0.2)}50%{box-shadow:0 0 0 8px rgba(16,185,129,0.08)}}
-.otp-header{display:flex;align-items:center;gap:10px;margin-bottom:10px}
-.otp-icon{font-size:28px}
-.otp-title{font-size:15px;font-weight:800;color:var(--green2);flex:1}
-.otp-speed{font-size:12px;font-weight:700;padding:3px 10px;border-radius:20px;background:rgba(16,185,129,0.2);border:1px solid rgba(16,185,129,0.4);color:var(--green2)}
-.otp-info-row{display:flex;justify-content:space-between;align-items:center;background:rgba(0,0,0,0.25);border-radius:var(--r3);padding:10px 12px;margin-bottom:10px}
-.otp-next-label{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:1px}
-.otp-next-stop{font-size:17px;font-weight:800;color:var(--amber2);margin-top:2px}
-.otp-eta{text-align:right}
-.otp-eta-val{font-size:26px;font-weight:900;color:var(--green2);line-height:1}
-.otp-eta-unit{font-size:10px;color:var(--text3)}
-.otp-actions{display:flex;gap:8px}
-.otp-btn{flex:1;padding:10px 8px;border-radius:var(--r3);border:none;font-size:12px;font-weight:700;cursor:pointer;transition:all .15s}
-.otp-btn.exit{background:rgba(16,185,129,0.2);border:1px solid var(--green2);color:var(--green2)}
-.otp-btn.breakdown{background:rgba(239,68,68,0.2);border:1px solid var(--red2);color:var(--red2)}
-.otp-btn.slow-warn{background:rgba(245,158,11,0.2);border:1px solid var(--amber2);color:var(--amber2);display:none}
-.otp-slow-bar{background:rgba(245,158,11,0.15);border:1px solid rgba(245,158,11,0.3);border-radius:var(--r3);padding:8px 12px;font-size:12px;color:var(--amber2);font-weight:600;margin-bottom:10px;display:none}
-
-/* ── CANLÜ TRENLİ BADGE ANA EKRAN ── */
-.live-train-bar{margin:6px 16px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.live-train-chip{display:flex;align-items:center;gap:5px;background:rgba(16,185,129,0.15);border:1px solid rgba(16,185,129,0.5);border-radius:20px;padding:4px 10px;font-size:11px;font-weight:700;color:var(--green2);cursor:pointer;transition:all .15s}
-.live-train-chip:active{transform:scale(0.97)}
-.live-train-chip .live-dot{width:7px;height:7px;border-radius:50%;background:var(--green2);box-shadow:0 0 6px var(--green2);animation:pulseGreen 1s infinite}
-.live-train-chip .live-eta{font-size:10px;font-weight:800;padding:1px 6px;border-radius:10px;margin-left:2px}
-.live-eta.fresh{background:rgba(16,185,129,0.3);color:var(--green2)}
-.live-eta.stale{background:rgba(245,158,11,0.3);color:var(--amber2)}
-.live-bar-label{font-size:10px;color:var(--text3);font-weight:600;text-transform:uppercase;letter-spacing:1px}
-
-/* ── ANA EKRANA EKLE ŞERIT ── */
-.pwa-strip{display:none;align-items:center;justify-content:space-between;gap:10px;padding:8px 16px;background:linear-gradient(90deg,rgba(37,99,235,0.25),rgba(99,102,241,0.2));border-bottom:1px solid rgba(99,102,241,0.35)}
-.pwa-strip.visible{display:flex}
-.pwa-strip-left{display:flex;align-items:center;gap:10px;flex:1;cursor:pointer}
-.pwa-strip-icon{font-size:24px;line-height:1}
-.pwa-strip-text{font-size:12px;color:var(--text2);line-height:1.4}
-.pwa-strip-text strong{color:var(--text);font-size:13px;display:block}
-.pwa-strip-btn{flex-shrink:0;background:linear-gradient(135deg,#1d4ed8,#2563eb);border:none;border-radius:20px;padding:8px 18px;font-size:12px;font-weight:800;color:#fff;cursor:pointer;box-shadow:0 2px 10px rgba(37,99,235,0.5);white-space:nowrap}
-.pwa-strip-close{background:none;border:none;color:var(--text3);font-size:18px;cursor:pointer;padding:4px 6px;line-height:1;flex-shrink:0}
-
-/* ── SAATLER LİSTESİNDE CANLI ROZET ── */
-.tc-live-badge{display:inline-flex;align-items:center;gap:3px;font-size:9px;font-weight:700;padding:2px 6px;border-radius:10px;background:rgba(16,185,129,0.2);border:1px solid rgba(16,185,129,0.4);color:var(--green2);margin-left:6px}
-.tc-live-badge .ld{width:5px;height:5px;border-radius:50%;background:var(--green2);animation:pulseGreen 1s infinite}
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 
 /* ══ TEMA: KOYU (varsayılan) ══ */
@@ -691,19 +741,6 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-h
   </div>
 
   <div class="pages-swipe-wrap" id="swipeWrap">
-
-    <!-- ── PWA KURULUM ŞERIT ── -->
-    <div class="pwa-strip" id="pwaStrip">
-      <div class="pwa-strip-left" onclick="triggerPwaInstallStrip()">
-        <div class="pwa-strip-icon">📲</div>
-        <div class="pwa-strip-text">
-          <strong>Ana Ekrana Ekle</strong>
-          İnternet bağlantısı olmadan da çalışır
-        </div>
-      </div>
-      <button class="pwa-strip-btn" onclick="triggerPwaInstallStrip()">Yükle</button>
-      <button class="pwa-strip-close" onclick="dismissPwaStrip()" title="Kapat">✕</button>
-    </div>
     <div class="pages-swipe-inner" id="swipeInner">
       
       <!-- SAATLER PAGE -->
@@ -726,33 +763,6 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-h
         </div>
         
         <div id="bigAlertCard" style="display:none"></div>
-        
-        <!-- CANLÜ TRENLİ BAR — tüm kullanıcılar görür -->
-        <div id="liveTrainBar" class="live-train-bar" style="display:none"></div>
-        
-        <!-- TRENDE PANELİ — yolcu için -->
-        <div id="onTrainPanel" class="on-train-panel" style="display:none">
-          <div class="otp-header">
-            <span class="otp-icon">🚆</span>
-            <div class="otp-title">Trende Seyahat Ediyorsunuz</div>
-            <div class="otp-speed" id="otpSpeed">0 km/h</div>
-          </div>
-          <div class="otp-slow-bar" id="otpSlowBar">⚠️ Hız düştü — tren yavaşlıyor</div>
-          <div class="otp-info-row">
-            <div>
-              <div class="otp-next-label">SONRAKİ DURAK</div>
-              <div class="otp-next-stop" id="otpNextStop">—</div>
-            </div>
-            <div class="otp-eta">
-              <div class="otp-eta-val" id="otpEta">—</div>
-              <div class="otp-eta-unit">dakika</div>
-            </div>
-          </div>
-          <div class="otp-actions">
-            <button class="otp-btn exit" onclick="exitTrain()">🚉 Trenden İndim</button>
-            <button class="otp-btn breakdown" onclick="reportTrainBreakdown()">🔧 Arıza Bildir</button>
-          </div>
-        </div>
 
         <div class="location-card" id="locationCard" style="display:none">
           <div class="location-header">
@@ -1278,39 +1288,9 @@ function updateLocationStatus(lat, lon, speedKmh) {
   currentStopObj = nearestStop;
   isAtStation = minDist <= 120;
 
-  // ── 4. Tren tespiti — KML güzergah bazlı ──
-  // Hat üzerinde mi? KML noktalarından en yakın mesafeyi hesapla
-  let minRouteDistM = Infinity;
-  for (let i = 0; i < KML_ROUTE_COORDS.length - 1; i++) {
-    const [la, loa] = KML_ROUTE_COORDS[i];
-    const [lb, lob] = KML_ROUTE_COORDS[i + 1];
-    // Segment üzerindeki en yakın noktaya mesafe
-    const dA = haversine(lat, lon, la, loa);
-    const dB = haversine(lat, lon, lb, lob);
-    const dMid = haversine(lat, lon, (la + lb) / 2, (loa + lob) / 2);
-    const segMin = Math.min(dA, dB, dMid);
-    if (segMin < minRouteDistM) minRouteDistM = segMin;
-  }
-  const onHat = minRouteDistM < 200; // Güzergaha 200m mesafede
-
-  // Trende kabul: hız > 10 km/h VE güzergah üzerinde
-  // Bir kez trende kabul edilince: hız > 3 km/h olduğu sürece trende say
-  const wasOnTrain = isOnTrain;
-  if (!wasOnTrain) {
-    // İlk tespite girme: hız ≥ 10 ve hat üzerinde
-    // Manuel çıkıştan sonra yeniden trene binme: hız ≥ 15 gerekli
-    const threshold = window._manualExited ? 15 : 10;
-    isOnTrain = (speedKmh >= threshold && onHat);
-    if (isOnTrain) window._manualExited = false;
-  } else {
-    // Trende iken: hız < 3 veya hat dışına çıktıysa çıkış adayı
-    // (exitTrain butonu veya stopGpsBroadcast ile netleşir)
-    isOnTrain = onHat && speedKmh >= 3;
-  }
-
-  // Yavaş hız uyarısı (trende, hız düşmüş)
-  window._currentSpeedKmh = speedKmh;
-  const slowWarning = isOnTrain && speedKmh < 10 && speedKmh >= 3;
+  // ── 4. Tren tespiti ──
+  const onHat = minDist < 400;
+  isOnTrain = (speedKmh > 5 && onHat) || (speedKmh > 2 && minDist < 200);
 
   // ── 5. Sonraki durak + ETA — İSTASYON ODAKLI ALGORİTMA ──
   // Hız tabanlı anlık hesap yerine tarife + geofence checkpoint mantığı:
@@ -1343,41 +1323,28 @@ function updateLocationStatus(lat, lon, speedKmh) {
       if (bestIdx >= 0 && nextTimes[bestIdx]) {
         const nextStopSec = toSec(nextTimes[bestIdx]);
         const remaining   = nextStopSec - nowSc;
-        // İki durak arası en fazla 3 dakika — 0-180 saniye geçerli
-        if (remaining > 0 && remaining <= 180) {
+        if (remaining > 0 && remaining < 600) { // 0–10 dakika arası geçerli
           etaSec = remaining;
-        } else if (remaining > 180 && remaining < 600) {
-          // Sefer henüz duraklar arasında hareket başlamamış olabilir
-          // Konuma göre interpolasyon yap
-          const curStopSec = toSec(curTimes[bestIdx]);
-          const segLen = toSec(nextTimes[bestIdx]) - curStopSec;
-          const elapsed = Math.max(0, nowSc - curStopSec);
-          const progress = segLen > 0 ? Math.min(1, elapsed / segLen) : 0;
-          etaSec = Math.round(segLen * (1 - progress));
-          if (etaSec > 180) etaSec = 180; // max 3 dk
         }
       }
 
-      // ── b) Düzeltme: mesafe bazlı etki ──
+      // ── b) Düzeltme: şu anki konuma göre mesafe bazlı tahmini ekle ──
+      //    (sadece trende ve hız > 0 ise, %20 etki)
       if (etaSec !== null && speedKmh > 10 && isOnTrain) {
         const distToNext = haversine(lat, lon, nextStopObj.lat, nextStopObj.lon);
         const speedEta   = distToNext / (speedKmh / 3.6); // saniye
         etaSec = etaSec * 0.8 + speedEta * 0.2; // %80 tarife, %20 hız
-        etaSec = Math.min(etaSec, 180); // max 3 dk cap
       }
     }
 
     // ── c) Fallback: sonraki bu duraktan geçecek ilk sefer ──
     if (etaSec === null && nextTimes) {
       const upcoming = nextTimes.find(t => toSec(t) > nowSc);
-      if (upcoming) {
-        const diff = toSec(upcoming) - nowSc;
-        etaSec = Math.min(diff, 180); // cap 3 dk
-      }
+      if (upcoming) etaSec = toSec(upcoming) - nowSc;
     }
 
     lastEtaMinutes = etaSec !== null
-      ? Math.max(1, Math.min(Math.round(etaSec / 60), 3)) // max 3 dakika
+      ? Math.max(1, Math.min(Math.round(etaSec / 60), 30))
       : null;
 
   } else {
@@ -1421,9 +1388,6 @@ function updateLocationStatus(lat, lon, speedKmh) {
     if (nextEtaVal) nextEtaVal.innerHTML = lastEtaMinutes ? `${lastEtaMinutes} dk` : '—';
   } else if (nextPanel) nextPanel.style.display = 'none';
 
-  // ── 7. Trende Paneli Güncelle ──
-  updateOnTrainPanel(speedKmh, slowWarning);
-
   if (STOPS_ALL.includes(nearestStop.ad) && curStop !== nearestStop.ad) {
     curStop = nearestStop.ad;
     if (detectedDirection !== null) { curDir = detectedDirection; setDir(curDir); }
@@ -1431,91 +1395,6 @@ function updateLocationStatus(lat, lon, speedKmh) {
   }
   updateBigAlertCard();
   if (map && map.getContainer()) updateMapLocation(lat, lon);
-}
-
-function updateOnTrainPanel(speedKmh, slowWarning) {
-  const panel = document.getElementById('onTrainPanel');
-  if (!panel) return;
-
-  if (!isOnTrain || !locationActive) {
-    panel.style.display = 'none';
-    // Eski bigAlertCard göster
-    return;
-  }
-
-  panel.style.display = 'block';
-
-  // Hız göstergesi
-  const otpSpeed = document.getElementById('otpSpeed');
-  if (otpSpeed) otpSpeed.textContent = `${Math.round(speedKmh)} km/h`;
-
-  // Sonraki durak + ETA
-  const otpNextStop = document.getElementById('otpNextStop');
-  const otpEta = document.getElementById('otpEta');
-  if (otpNextStop) otpNextStop.textContent = nextStopObj ? nextStopObj.ad : '—';
-  if (otpEta) otpEta.textContent = lastEtaMinutes !== null ? lastEtaMinutes : '—';
-
-  // Yavaş hız uyarısı
-  const slowBar = document.getElementById('otpSlowBar');
-  if (slowBar) slowBar.style.display = slowWarning ? 'block' : 'none';
-}
-
-function exitTrain() {
-  isOnTrain = false;
-  window._manualExited = true;
-  stopGpsBroadcast();
-  const panel = document.getElementById('onTrainPanel');
-  if (panel) panel.style.display = 'none';
-  showToast('✅ Trenden inildi — konum takibi devam ediyor');
-}
-
-// Canlı tren barını güncelle — tüm kullanıcılar görür (Supabase'den)
-function updateLiveTrainBar() {
-  const bar = document.getElementById('liveTrainBar');
-  if (!bar) return;
-
-  const now = Date.now();
-  const liveTrains = [];
-
-  // Tarifedeki aktif seferlerle __onlineTrains'i eşleştir
-  getTrainPositions().forEach(train => {
-    const trainKey = `${train.dir === 0 ? 'SK' : 'KS'}_${train.seferSaati}`;
-    const online = window.__onlineTrains[trainKey];
-    if (!online) return;
-    const age = now - online.lastSeen;
-    if (age > 90000) return; // 90 saniyeden eski veri gösterme
-    liveTrains.push({
-      key: trainKey,
-      dir: train.dir,
-      seferSaati: train.seferSaati,
-      sonrakiDurak: train.sonrakiDurak,
-      etaDk: train.etaDk,
-      contributorCount: online.contributorCount || 1,
-      speedKmh: online.speedKmh || 0,
-      ageSec: Math.round(age / 1000)
-    });
-  });
-
-  if (!liveTrains.length) {
-    bar.style.display = 'none';
-    return;
-  }
-
-  bar.style.display = 'flex';
-  const label = `<span class="live-bar-label">🟢 Canlı</span>`;
-  const chips = liveTrains.map(t => {
-    const dirLabel = t.dir === 0 ? '→Kayaş' : '←Sincan';
-    const etaClass = t.ageSec < 30 ? 'fresh' : 'stale';
-    const etaText = t.etaDk !== null ? `${t.etaDk}dk` : '—';
-    const contributors = t.contributorCount > 1 ? ` 👥${t.contributorCount}` : '';
-    return `<div class="live-train-chip" onclick="showPage('harita',2)">
-      <div class="live-dot"></div>
-      🚆${dirLabel}
-      <span class="live-eta ${etaClass}">${etaText}</span>
-      ${contributors ? `<span style="font-size:9px;opacity:0.8">${contributors}</span>` : ''}
-    </div>`;
-  }).join('');
-  bar.innerHTML = label + chips;
 }
 
 function updateCommunityPanel() {
@@ -1557,33 +1436,7 @@ function updateCommunityPanel() {
 function updateBigAlertCard() {
   const container = document.getElementById('bigAlertCard');
   if (!container) return;
-
-  // Trende ve hareket halindeyken özel durum
-  if (isOnTrain && locationActive) {
-    const speed = window._currentSpeedKmh || 0;
-    if (speed > 0 && speed < 10) {
-      container.style.display = 'block';
-      container.className = 'alert-card urgent';
-      container.innerHTML = `
-        <div class="alert-card-header">
-          <span class="alert-icon">🐢</span>
-          <div class="alert-title">TREN YAVAŞLADI</div>
-          <div class="alert-time">${new Date().toLocaleTimeString().slice(0,5)}</div>
-        </div>
-        <div class="alert-message">
-          Tren hızı <strong>${Math.round(speed)} km/h</strong>. Hat içinde yavaşlama. Arıza bildirmek ister misiniz?
-        </div>
-        <div class="alert-actions">
-          <button class="alert-btn warning" onclick="reportTrainBreakdown()">🔧 Arıza Bildir</button>
-          <button class="alert-btn" onclick="this.closest('.alert-card').style.display='none'">Hayır, Normal</button>
-        </div>
-      `;
-      return;
-    }
-    container.style.display = 'none';
-    return;
-  }
-
+  
   if (isAtStation && currentStopObj && locationActive) {
     const stationName = currentStopObj.ad;
     const futureTrains = getFuture(stationName, curDir);
@@ -1629,6 +1482,55 @@ function updateBigAlertCard() {
       `;
       return;
     }
+  }
+  
+  if (isOnTrain && nextStopObj && lastEtaMinutes !== null && lastEtaMinutes <= 5 && locationActive) {
+    const trainLine = curDir === 0 ? 'Sincan → Kayaş' : 'Kayaş → Sincan';
+    const breakdownReport = communityReports.breakdown[trainLine];
+    const breakdownCount = breakdownReport?.count || 0;
+    const majorityBreakdown = breakdownCount >= 3;
+    
+    if (majorityBreakdown) {
+      container.style.display = 'block';
+      container.className = 'alert-card urgent';
+      container.innerHTML = `
+        <div class="alert-card-header">
+          <span class="alert-icon">⚠️🚆</span>
+          <div class="alert-title">TRENDE ARIZA BİLDİRİLDİ!</div>
+          <div class="alert-time">${new Date().toLocaleTimeString().slice(0,5)}</div>
+        </div>
+        <div class="alert-message">
+          ${breakdownCount} yolcu bu hatta arıza bildirdi. Seyir yavaşlayabilir.
+          ${nextStopObj.ad} durağına ${lastEtaMinutes} dakika kaldı.
+        </div>
+        <div class="alert-actions">
+          <button class="alert-btn confirm" onclick="reportTrainBreakdown()">⚠️ Trende Arıza Var</button>
+        </div>
+        <div class="confirm-count">
+          <div class="confirm-dot majority"></div>
+          <span><strong>${breakdownCount} kişi onayladı</strong></span>
+        </div>
+      `;
+      return;
+    }
+    
+    container.style.display = 'block';
+    container.className = 'alert-card on-train';
+    container.innerHTML = `
+      <div class="alert-card-header">
+        <span class="alert-icon">🚆</span>
+        <div class="alert-title">${lastEtaMinutes <= 1 ? 'TREN GELİYOR!' : 'TREN YAKLAŞIYOR'}</div>
+        <div class="alert-time">${new Date().toLocaleTimeString().slice(0,5)}</div>
+      </div>
+      <div class="alert-message">
+        <strong>${nextStopObj.ad}</strong> durağına ${lastEtaMinutes} dakika kaldı.<br>
+        ${lastEtaMinutes <= 1 ? 'İnmek için hazır olun! 🚉' : 'Biletinizi ve eşyalarınızı hazırlayın.'}
+      </div>
+      <div class="alert-actions">
+        <button class="alert-btn confirm" onclick="reportTrainBreakdown()">⚠️ Trende Arıza Var</button>
+      </div>
+    `;
+    return;
   }
   
   container.style.display = 'none';
@@ -1821,37 +1723,15 @@ function buildTrainList() {
   const list = document.getElementById('trainList');
   if (!list) return;
   list.innerHTML = '';
-
-  // Hangi sefer saatlerinde canlı veri var?
-  const now = Date.now();
-  const liveKeys = new Set();
-  Object.entries(window.__onlineTrains || {}).forEach(([k, v]) => {
-    if (now - v.lastSeen < 90000) liveKeys.add(k);
-  });
-
-  // Aktif tren konumlarıyla eşleştir
-  const activeTr = getTrainPositions();
-
   visible.forEach(t => {
     const m = until(t);
     const isNext = t === fut[0];
     let u = m <= 3 ? 'urgent' : m <= 8 ? 'soon' : 'ok';
     let badgeText = m <= 0 ? 'Geçti' : mTxt(m);
     if (m <= 0) u = 'past';
-
-    // Canlı veri var mı?
-    const dirLabel = curDir === 0 ? 'SK' : 'KS';
-    const trainKey = `${dirLabel}_${t}`;
-    const isLive = liveKeys.has(trainKey);
-    const onlineData = window.__onlineTrains?.[trainKey];
-    const contributors = onlineData?.contributorCount || 0;
-
     const card = document.createElement('div');
     card.className = 'tc ' + (isNext ? 'next' : '');
-    const liveBadge = isLive
-      ? `<span class="tc-live-badge"><span class="ld"></span>CANLI${contributors > 1 ? ' ' + contributors : ''}</span>`
-      : '';
-    card.innerHTML = `<div class="tc-row"><div class="tc-time n">${t}${liveBadge}</div><div class="tc-badge ${u}">${badgeText}</div></div>`;
+    card.innerHTML = `<div class="tc-row"><div class="tc-time n">${t}</div><div class="tc-badge ${u}">${badgeText}</div></div>`;
     list.appendChild(card);
   });
   const btn = document.getElementById('showMoreBtn');
@@ -2244,7 +2124,6 @@ function startOnlineTrainListener() {
         lastSeen:         Date.now()
       };
       if (map) updateTrainMarkers();
-      updateLiveTrainBar();
     })
     .subscribe();
 
@@ -2266,7 +2145,6 @@ function startOnlineTrainListener() {
         };
       });
       if (map) updateTrainMarkers();
-      updateLiveTrainBar();
     });
 }
 
@@ -2312,7 +2190,7 @@ function startGpsBroadcast() {
     const currentSpeed = speedKmh || 0;
     const movingFast = currentSpeed > 5;
     
-    if ((!isOnTrain && !movingFast) || !userLocation || !locationActive || window._manualExited) {
+    if ((!isOnTrain && !movingFast) || !userLocation || !locationActive) {
       if (_lastKnownTrainKey) {
         clearTimeout(_trainExitTimeout);
         _trainExitTimeout = setTimeout(() => {
@@ -2534,7 +2412,7 @@ function tickClock() {
 }
 
 // ════════════════════════════════════════════════════════
-//  PWA KURULUM — Ana ekrana ekle (Şerit + Gerçek Yükleme)
+//  PWA KURULUM — Ana ekrana ekle
 // ════════════════════════════════════════════════════════
 let deferredPrompt = null;
 
@@ -2545,59 +2423,27 @@ function isInStandaloneMode() {
   return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
 }
 
-// Şeridi göster / gizle
-function showPwaStrip() {
-  if (isInStandaloneMode()) return; // zaten uygulama olarak çalışıyor
-  if (localStorage.getItem('bkr_pwa_strip_dismissed') === '1') return;
-  const strip = document.getElementById('pwaStrip');
-  if (strip) strip.classList.add('visible');
-}
-
-function dismissPwaStrip() {
-  const strip = document.getElementById('pwaStrip');
-  if (strip) strip.classList.remove('visible');
-  localStorage.setItem('bkr_pwa_strip_dismissed', '1');
-}
-
-// Şerit yükle butonuna basınca
-async function triggerPwaInstallStrip() {
-  if (deferredPrompt) {
-    // Android/Chrome — native prompt
-    deferredPrompt.prompt();
-    const { outcome } = await deferredPrompt.userChoice;
-    deferredPrompt = null;
-    if (outcome === 'accepted') {
-      dismissPwaStrip();
-      localStorage.setItem('bkr_installed', '1');
-      showToast('✅ Başkentray ana ekrana eklendi!');
-    }
-  } else if (isIOS()) {
-    // iOS — talimat overlay aç
-    openPwaOverlay();
-  } else {
-    // Diğer tarayıcılar — overlay göster
-    openPwaOverlay();
-  }
-}
-
 window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
   deferredPrompt = e;
-  // Şeridi göster (override ile — dismiss edilmemiş olsa bile)
-  const strip = document.getElementById('pwaStrip');
-  if (strip && !isInStandaloneMode()) {
-    strip.classList.add('visible');
-    localStorage.removeItem('bkr_pwa_strip_dismissed'); // prompt geldi, tekrar göster
-  }
+  // Eski küçük banner'ı göster (alt kısım)
+  document.getElementById('installBanner').style.display = 'flex';
 });
 
 function triggerPwaInstall() {
-  triggerPwaInstallStrip();
+  if (deferredPrompt) {
+    deferredPrompt.prompt();
+    deferredPrompt.userChoice.then(() => {
+      deferredPrompt = null;
+      closePwaOverlay();
+    });
+  }
 }
 
 function openPwaOverlay() {
   const overlay = document.getElementById('pwaOverlay');
   overlay.classList.add('open');
+  // iOS vs Android tespiti
   if (isIOS()) {
     document.getElementById('pwaIosSteps').style.display = 'block';
     document.getElementById('pwaAndroidBtn').style.display = 'none';
@@ -2615,31 +2461,24 @@ function openPwaOverlay() {
 
 function closePwaOverlay() {
   document.getElementById('pwaOverlay').classList.remove('open');
+  localStorage.setItem('bkr_pwa_dismissed', Date.now());
 }
 
 document.getElementById('installBtn')?.addEventListener('click', () => {
-  triggerPwaInstallStrip();
+  openPwaOverlay();
   document.getElementById('installBanner').style.display = 'none';
 });
 
-// PWA başlangıçta şeridi göster (zaten kurulu değilse)
+// PWA overlay — otomatik aç (kurulu değilse, günde 1 kez)
 function maybeShowPwaPrompt() {
-  if (isInStandaloneMode()) {
-    localStorage.setItem('bkr_installed', '1');
-    return;
-  }
+  // Zaten uygulama olarak çalışıyor veya daha önce kurulduysa gösterme
+  if (isInStandaloneMode()) return;
   if (localStorage.getItem('bkr_installed') === '1') return;
-  // iOS'ta her zaman şerit göster (prompt gelmez ama iOS talimatları verebiliriz)
-  if (isIOS()) {
-    showPwaStrip();
-    return;
+  const last = parseInt(localStorage.getItem('bkr_pwa_dismissed') || '0');
+  const hoursSince = (Date.now() - last) / (1000 * 60 * 60);
+  if (hoursSince > 24) {
+    setTimeout(openPwaOverlay, 2500);
   }
-  // Android/Chrome: beforeinstallprompt gelince otomatik açılacak
-  // Ama fallback olarak biraz bekleyip kontrol et
-  setTimeout(() => {
-    if (!deferredPrompt) return; // prompt yoksa gösterme
-    showPwaStrip();
-  }, 1500);
 }
 
 // ════════════════════════════════════════════════════════
@@ -2770,7 +2609,6 @@ setInterval(() => {
     updateBigAlertCard();
     updateCommunityPanel();
   }
-  updateLiveTrainBar();
 }, 5000);
 
 
@@ -2965,8 +2803,6 @@ setInterval(() => {
     if (overlay) overlay.classList.remove('open');
     const banner = document.getElementById('installBanner');
     if (banner) banner.style.display = 'none';
-    // Yeni şeridi gizle
-    dismissPwaStrip();
     showToast('🎉 Başkentray başarıyla kuruldu! Artık uygulama olarak açılacak.');
   });
 
@@ -3043,39 +2879,35 @@ function findMyTrain(activeTrains, userLat, userLon, speedKmh) {
 function trainIcon(isOnline, dir, contributorCount = 0) {
   const isCrowd = contributorCount >= 3;
   const isVeryCrowd = contributorCount >= 8;
-  let bg, glow, borderColor;
+  let bg, glow;
   if (isOnline) {
     if (isVeryCrowd) {
-      bg = 'linear-gradient(135deg,#ef4444,#dc2626)';
-      glow = 'rgba(239,68,68,0.8)';
-      borderColor = '#fca5a5';
+      bg = '#ef4444';
+      glow = 'rgba(239,68,68,0.7)';
     } else if (isCrowd) {
-      bg = 'linear-gradient(135deg,#f59e0b,#d97706)';
-      glow = 'rgba(245,158,11,0.8)';
-      borderColor = '#fcd34d';
+      bg = '#f59e0b';
+      glow = 'rgba(245,158,11,0.7)';
     } else {
-      bg = 'linear-gradient(135deg,#10b981,#059669)';
-      glow = 'rgba(16,185,129,0.9)';
-      borderColor = '#6ee7b7';
+      bg = '#10b981';
+      glow = 'rgba(16,185,129,0.6)';
     }
   } else {
-    bg = 'linear-gradient(135deg,#3b82f6,#2563eb)';
+    bg = '#3b82f6';
     glow = 'rgba(59,130,246,0.5)';
-    borderColor = 'rgba(255,255,255,0.7)';
   }
   const arrow = dir === 0 ? '→' : '←';
-  const liveIndicator = isOnline
-    ? `<span style="display:inline-block;width:6px;height:6px;background:#fff;border-radius:50%;margin-left:3px;animation:trainPulse 1s infinite;vertical-align:middle"></span>`
-    : '';
-  const crowdLabel = isVeryCrowd ? '🔥' : isCrowd ? '👥' : '';
-  const cntLabel = contributorCount > 0 ? `<span style="font-size:8px;opacity:0.9;margin-left:2px">${contributorCount}</span>` : '';
+  let crowdIcon = '';
+  if (isVeryCrowd) crowdIcon = '🔥';
+  else if (isCrowd) crowdIcon = '👥';
   return L.divIcon({
     className: '',
-    html: `<div style="position:relative;background:${bg};color:#fff;font-size:11px;font-weight:900;padding:4px 9px;border-radius:14px;border:2px solid ${borderColor};box-shadow:0 0 ${isOnline ? '14px' : '6px'} ${glow};white-space:nowrap;line-height:1.3;text-align:center;letter-spacing:0.3px">
-      ${crowdLabel}🚆${arrow}${liveIndicator}${cntLabel}
+    html: `<div style="position:relative;background:${bg};color:#fff;font-size:10px;font-weight:800;padding:3px 8px;border-radius:12px;border:2px solid rgba(255,255,255,0.95);box-shadow:0 0 10px ${glow};white-space:nowrap;line-height:1.2;text-align:center;">
+      ${crowdIcon}🚆${arrow}
+      ${isOnline ? `<span style="display:inline-block;width:6px;height:6px;background:#fff;border-radius:50%;margin-left:4px;animation:pulse 1s infinite"></span>` : ''}
+      ${contributorCount > 0 ? `<span style="font-size:8px;margin-left:4px;">${contributorCount}</span>` : ''}
     </div>`,
     iconSize: [null, null],
-    iconAnchor: [22, 13]
+    iconAnchor: [20, 12]
   });
 }
 
@@ -3114,8 +2946,27 @@ function updateTrainMarkers() {
     const totalContributors = Object.values(window.__onlineTrains).reduce((sum, t) => sum + (t.contributorCount || 0), 0);
     el.textContent = `${aktif.length} tren${totalContributors > 0 ? ` (${totalContributors})` : ''}`;
   }
-  // Canlı tren barını güncelle — tüm kullanıcılar görür
-  updateLiveTrainBar();
+}
+
+function startOnlineTrainListener() {
+  _db.channel('train_locations')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'train_locations' }, (payload) => {
+      const r = payload.new;
+      if (!r || !r.lat || !r.lon) return;
+      const key = r.direction + '_' + r.sefer_saati;
+      window.__onlineTrains[key] = { lat: r.lat, lon: r.lon, speedKmh: r.speed_kmh || 0, contributorCount: r.contributor_count || 1, lastSeen: Date.now() };
+      if (map) updateTrainMarkers();
+    })
+    .subscribe();
+  _db.from('train_locations').select('*').gte('updated_at', new Date(Date.now() - 120000).toISOString()).then(({ data }) => {
+    if (!data) return;
+    data.forEach(r => {
+      if (!r.lat || !r.lon) return;
+      const key = r.direction + '_' + r.sefer_saati;
+      window.__onlineTrains[key] = { lat: r.lat, lon: r.lon, speedKmh: r.speed_kmh || 0, contributorCount: r.contributor_count || 1, lastSeen: new Date(r.updated_at).getTime() };
+    });
+    if (map) updateTrainMarkers();
+  });
 }
 
 // ============================================================
