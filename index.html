@@ -113,37 +113,28 @@ if (navigator.geolocation) {
 }
 
 function startSupabaseListener() {
+    // Eğer zaten bir kanal varsa ve bağlıysa, tekrar bağlanma (Hatayı önler)
+    if (window.supabaseChannel) {
+        console.log("⚠️ Zaten bir bağlantı var, ikincisi açılmıyor.");
+        return;
+  }
+
     console.log("🔄 Supabase dinleyicisi hazırlanıyor...");
+    window.supabaseChannel = _db.channel('db-changes'); // Kanala isim ver ve pencereye kaydet
 
-    // 1. ADIM: Önce kanalı tanımla (Hemen .subscribe() DEME!)
-    const channel = _db.channel('db-changes');
-
-    // 2. ADIM: Neleri dinleyeceğini (olayları) kanala ekle
-    channel
-        .on('postgres_changes', { 
-            event: '*', 
-            schema: 'public', 
-            table: 'reports' 
-        }, () => {
+    window.supabaseChannel
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'reports' }, () => {
             if (typeof fetchReports === "function") fetchReports();
         })
-        .on('postgres_changes', { 
-            event: '*', 
-            schema: 'public', 
-            table: 'train_locations' 
-        }, (payload) => {
-            console.log("⚡ Tren verisi güncellendi, harita tazeleniyor...");
-            haritayiCanliGuncelle(); // Bu fonksiyon haritadaki treni hareket ettirir
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'train_locations' }, (payload) => {
+            console.log("⚡ Tren verisi güncellendi!");
+            if (typeof haritayiCanliGuncelle === "function") haritayiCanliGuncelle();
+        })
+        .subscribe((status) => {
+            if (status === 'SUBSCRIBED') {
+                console.log("✅ Supabase Realtime bağlantısı hatasız kuruldu!");
+            }
         });
-
-    // 3. ADIM: ŞİMDİ "Abone Ol" diyerek bağlantıyı ateşle
-    channel.subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
-            console.log("✅ Supabase Realtime bağlantısı hatasız kuruldu!");
-        } else {
-            console.log("📡 Bağlantı Durumu:", status);
-        }
-    });
 }
 
 startSupabaseListener();
