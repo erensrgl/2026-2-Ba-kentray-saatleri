@@ -2116,49 +2116,8 @@ function getTrainPositions() {
 // ── Haritadaki tren markerlarını güncelle ──
 
 
-// ── Supabase'den gerçek GPS verilerini al ──
-function startOnlineTrainListener() {
-  // Realtime channel — tren GPS bildirimleri
-  _db.channel('train_locations')
-    .on('postgres_changes', {
-      event: '*',
-      schema: 'public',
-      table: 'train_locations'
-    }, (payload) => {
-      const r = payload.new;
-      if (!r || !r.lat || !r.lon) return;
-      const key = r.direction + '_' + r.sefer_saati;
-      window.__onlineTrains[key] = {
-        lat:              r.lat,
-        lon:              r.lon,
-        speedKmh:         r.speed_kmh || 0,
-        contributorCount: r.contributor_count || 1,
-        lastSeen:         Date.now()
-      };
-      if (map) updateTrainMarkers();
-    })
-    .subscribe();
+// ── sSupabase'den gerçek GPS verilerini al ──
 
-  // İlk yükleme — son 2 dakika içindeki kayıtları çek
-  _db.from('train_locations')
-    .select('*')
-    .gte('updated_at', new Date(Date.now() - 120000).toISOString())
-    .then(({ data }) => {
-      if (!data) return;
-      data.forEach(r => {
-        if (!r.lat || !r.lon) return;
-        const key = r.direction + '_' + r.sefer_saati;
-        window.__onlineTrains[key] = {
-          lat:              r.lat,
-          lon:              r.lon,
-          speedKmh:         r.speed_kmh || 0,
-          contributorCount: r.contributor_count || 1,
-          lastSeen:         new Date(r.updated_at).getTime()
-        };
-      });
-      if (map) updateTrainMarkers();
-    });
-}
 
 // ── Kendi GPS konumunu Supabase'e yayınla (trende olunca) ──
 
