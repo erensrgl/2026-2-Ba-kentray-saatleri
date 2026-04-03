@@ -5,7 +5,7 @@
 //  - PWA/Çevrimdışı desteği optimize edildi
 // ════════════════════════════════════════════════
 
-const CACHE_VERSION = 'v7';
+const CACHE_VERSION = 'v8';
 const CACHE_NAME = 'baskentray-' + CACHE_VERSION;
 
 const STATIC_ASSETS = [
