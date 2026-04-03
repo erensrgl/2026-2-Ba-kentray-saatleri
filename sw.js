@@ -5,7 +5,7 @@
 //  - Kurulum sonrası buton bir daha gösterilmez
 // ════════════════════════════════════════════════
 
-const CACHE_VERSION = 'v6';
+const CACHE_VERSION = 'v7';
 const CACHE_NAME = 'baskentray-' + CACHE_VERSION;
 
 const STATIC_ASSETS = [
